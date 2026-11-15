@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+}
+
+/* Gently falling snow */
+@keyframes snowfall {
+  0% {
+    transform: translateY(-10vh) translateX(0);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(110vh) translateX(4vw);
+    opacity: 0.9;
+  }
+}
+
+.snowflake {
+  top: -8vh;
+  animation-name: snowfall;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+/* Print only the letter to Santa */
+@media print {
+  body {
+    background: #fff !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  #santa-letter {
+    box-shadow: none !important;
+    border: 2px solid #c62828 !important;
+    margin: 0 !important;
+    max-width: 100% !important;
+  }
+  @page {
+    margin: 1.5cm;
+  }
+}
