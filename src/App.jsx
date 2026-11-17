@@ -4,8 +4,12 @@ import { CATEGORIES, TOYS, daysUntilChristmas } from './data/toys'
 const LS_PICKS = 'santalist:picks'
 const LS_NAME = 'santalist:name'
 const LS_AGE = 'santalist:age'
-const LS_PREMIUM = 'santalist:premium'
 const LS_THEME = 'santalist:theme'
+// Premium is verified server-side by the Supabase "premium" edge function.
+// The token stored here is the Stripe checkout session id — it only unlocks
+// Premium while the server confirms it was paid. This flag alone never
+// grants Premium: on every load the token is re-checked with the server.
+const LS_TOKEN = 'santalist_premium_token'
 
 // SantaList Premium is a $2.99 one-time unlock (no subscription).
 const STRIPE_PAYMENT_LINK = 'https://buy.stripe.com/bJe28qes64Cq95SgLa4Ja02'
@@ -68,15 +72,88 @@ export default function App() {
   const [category, setCategory] = useState('all')
   const [customWish, setCustomWish] = useState('')
   const [toast, setToast] = useState('')
-  const [isPremium, setIsPremium] = useState(() => load(LS_PREMIUM, false))
+  const [isPremium, setIsPremium] = useState(false)
   const [letterTheme, setLetterTheme] = useState(() => load(LS_THEME, 'classic'))
   const [showUpgrade, setShowUpgrade] = useState(false)
+  const [checkingPremium, setCheckingPremium] = useState(false)
 
   useEffect(() => localStorage.setItem(LS_PICKS, JSON.stringify(picks)), [picks])
   useEffect(() => localStorage.setItem(LS_NAME, JSON.stringify(kidName)), [kidName])
   useEffect(() => localStorage.setItem(LS_AGE, JSON.stringify(kidAge)), [kidAge])
-  useEffect(() => localStorage.setItem(LS_PREMIUM, JSON.stringify(isPremium)), [isPremium])
   useEffect(() => localStorage.setItem(LS_THEME, JSON.stringify(letterTheme)), [letterTheme])
+
+  // Verify Premium with the Supabase backend on every load.
+  // 1. If we just came back from Stripe (?session_id=...), verify that
+  //    session with the server. On success the session id becomes our token.
+  // 2. Otherwise re-check any stored token with the server.
+  // Premium is on ONLY while the server says so. If the Supabase settings
+  // are missing, or the check fails, Premium stays locked (fail closed).
+  useEffect(() => {
+    async function verifyPremium() {
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
+      const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+      // Clean up the old v1 flag so a free unlock from before can never linger.
+      try {
+        localStorage.removeItem('santalist:premium')
+      } catch {
+        // ignore
+      }
+      if (!supabaseUrl || !anonKey) return
+      setCheckingPremium(true)
+      try {
+        const endpoint = `${String(supabaseUrl).replace(/\/$/, '')}/functions/v1/premium`
+        const headers = {
+          apikey: anonKey,
+          Authorization: `Bearer ${anonKey}`,
+          'Content-Type': 'application/json',
+        }
+        const params = new URLSearchParams(window.location.search)
+        const sessionId = params.get('session_id')
+        if (sessionId) {
+          // Strip session_id from the URL so a refresh does not re-verify.
+          const next = new URL(window.location.href)
+          next.searchParams.delete('session_id')
+          window.history.replaceState({}, '', next.toString())
+          const res = await fetch(endpoint, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ action: 'verify', session_id: sessionId }),
+          })
+          const data = await res.json().catch(() => ({}))
+          if (res.ok && data && data.premium) {
+            localStorage.setItem(LS_TOKEN, sessionId)
+            setIsPremium(true)
+            showToast('Welcome to Premium! ⭐ Enjoy the extra designs!')
+            return
+          }
+        }
+        const token = localStorage.getItem(LS_TOKEN)
+        if (!token) {
+          setIsPremium(false)
+          return
+        }
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ action: 'check', token }),
+        })
+        const data = await res.json().catch(() => ({}))
+        if (res.ok && data && data.premium) {
+          setIsPremium(true)
+        } else {
+          localStorage.removeItem(LS_TOKEN)
+          setIsPremium(false)
+        }
+      } catch {
+        // Network/server failure: fail closed, Premium stays off.
+        setIsPremium(false)
+      } finally {
+        setCheckingPremium(false)
+      }
+    }
+    verifyPremium()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const theme = THEMES.find((t) => t.id === letterTheme) || THEMES[0]
   const customWishCount = picks.filter((p) => p.toyId === null).length
@@ -108,12 +185,6 @@ export default function App() {
     setPicks((prev) => [...prev, { key: `custom-${Date.now()}`, toyId: null, name, emoji: '🎁', favorite: false }])
     setCustomWish('')
     showToast('Wish added!')
-  }
-
-  function unlockPremium() {
-    setIsPremium(true)
-    setShowUpgrade(false)
-    showToast('Welcome to Premium! ⭐ Enjoy the extra designs!')
   }
 
   function pickTheme(t) {
@@ -181,7 +252,7 @@ export default function App() {
       <div className="relative mx-auto max-w-6xl px-4 pb-16">
         {/* Header */}
         <header className="no-print pt-8 text-center">
-          <div className="text-6xl">🎅</div>
+          <img src="/logo-mark.png" alt="Letters to Santa logo" className="mx-auto h-28 w-28 rounded-full object-cover shadow-lg" />
           <h1 className="mt-2 font-display text-5xl font-bold tracking-tight sm:text-6xl">SantaList</h1>
           <p className="mx-auto mt-3 max-w-xl text-lg text-red-100">
             Pick your favorite toys from the pictures, make your very own Christmas wish list, and print a letter to Santa!
@@ -454,7 +525,7 @@ export default function App() {
           <div className="mt-4 space-y-3">
             {[
               ['Is SantaList free?', 'Yes! Picking toys, making your list, and printing your letter to Santa are all free. Premium is a one-time $2.99 that adds extra letter designs, unlimited custom wishes, and a Nice List certificate.'],
-              ['Is my child’s information safe?', 'Yes. Lists are saved only on this device in your browser. Nothing is sent to the internet, and no account is needed.'],
+              ['Is my child\u2019s information safe?', 'Yes. Lists are saved only on this device in your browser. Nothing is sent to the internet, and no account is needed.'],
               ['How do I print the letter?', 'Tap "Print my letter" and your printer will print just the letter — not the toy pictures. You can also save it as a PDF from the print screen.'],
               ['When should we send the letter to Santa?', 'Early December is best, so Santa and his elves have plenty of time!'],
             ].map(([q, a]) => (
@@ -497,12 +568,11 @@ export default function App() {
             >
               Get Premium — {PREMIUM_PRICE}
             </a>
-            <button
-              onClick={unlockPremium}
-              className="mt-2 w-full rounded-xl bg-santa-gold px-4 py-3 font-display font-semibold text-red-900 shadow hover:brightness-110"
-            >
-              I've upgraded — unlock it!
-            </button>
+            <p className="mt-3 text-sm font-bold text-gray-500">
+              {checkingPremium
+                ? 'Checking your payment… ✨'
+                : 'After paying, you\u2019ll come straight back here and Premium unlocks automatically. ✨'}
+            </p>
             <button onClick={() => setShowUpgrade(false)} className="mt-2 w-full py-2 text-sm font-bold text-gray-400">
               Not right now
             </button>
